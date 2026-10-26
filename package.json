@@ -1,21 +1,31 @@
 {
   "name": "opencode-copilot-enterprise",
   "version": "1.0.0",
-  "description": "OpenCode 2 plugin: descubre y publica los modelos custom de GitHub Copilot Enterprise (p. ej. inditex/KAIA/*)",
+  "description": "OpenCode 2 plugin that discovers and publishes GitHub Copilot Enterprise custom models",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DevNeonix/opencode-copilot-enterprise.git"
+  },
+  "homepage": "https://github.com/DevNeonix/opencode-copilot-enterprise#readme",
+  "bugs": {
+    "url": "https://github.com/DevNeonix/opencode-copilot-enterprise/issues"
+  },
   "exports": {
     ".": "./src/index.ts"
   },
   "files": [
     "src",
-    "index.ts"
+    "index.ts",
+    "README.md"
   ],
   "keywords": [
     "opencode",
     "opencode-plugin",
     "github-copilot",
-    "copilot-enterprise"
+    "copilot-enterprise",
+    "ai"
   ],
   "peerDependencies": {
     "@opencode/plugin": ">=2.1.0"

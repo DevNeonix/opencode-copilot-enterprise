@@ -1,25 +1,32 @@
-// V2 plugin (OpenCode 2.x): descubre en vivo los modelos custom de Copilot Enterprise
-// (p.ej. inditex/KAIA/*) y los publica como provider propio.
+// opencode-copilot-enterprise
 //
-// OpenCode no hace discovery de /models para github-copilot, así que los modelos
-// que la organización habilita nunca aparecen en el picker. Este plugin los lee del
-// propio token de Copilot y los publica como modelos del provider.
+// OpenCode 2 plugin que descubre en vivo los modelos custom de GitHub Copilot
+// Enterprise de cualquier organización (ids tipo `vendor/modelo`, p. ej.
+// `acme/llm/mi-modelo`) y los publica en el picker de modelos.
 //
-// Token: variable GITHUB_COPILOT_TOKEN (o COPILOT_GITHUB_TOKEN), o
-// ~/.local/share/opencode/auth.json (entrada "github-copilot").
+// Por qué hace falta: OpenCode no llama a `/models` para el provider
+// `github-copilot`, así que los modelos que la organización habilita nunca
+// aparecen. Este plugin lee el token que ya tiene OpenCode, lista `/models` y
+// publica los modelos de empresa como un provider `openai-compatible`
+// apuntando al endpoint que ellos mismos anuncian.
 //
-// Opciones (objeto {package, options} en opencode.json):
-//   providerID       id del provider publicado        (def. "github-copilot-enterprise")
-//   providerName     nombre visible                   (def. "GitHub Copilot Enterprise")
-//   enterpriseUrl    host de Copilot Enterprise       (def. value del auth.json o api.githubcopilot.com)
-//   include          regex opcional de ids a incluir  (def. todos los "vendor/*")
-//   exclude          regex opcional de ids a omitir
-//   refreshMinutes   minutos entre refrescos          (def. 10)
+// Token: `GITHUB_COPILOT_TOKEN` / `COPILOT_GITHUB_TOKEN`, o la entrada
+// `github-copilot` de `~/.local/share/opencode/auth.json`.
+//
+// Opciones (objeto `{ package, options }` en opencode.json):
+//   providerID      id del provider publicado          (def. "copilot-enterprise")
+//   providerName    nombre visible                     (def. "GitHub Copilot Enterprise")
+//   baseURL         host de Copilot                    (def. el del token, o api.githubcopilot.com)
+//   include         regex de ids a incluir             (def. todos los `vendor/*`)
+//   exclude         regex de ids a omitir              (def. ninguno)
+//   refreshMinutes  minutos entre refrescos            (def. 10)
 
 import { readFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { Model, Plugin, Provider } from "@opencode/plugin"
+
+const DEFAULT_BASE_URL = "https://api.githubcopilot.com"
 
 type CopilotModel = {
   id: string
@@ -35,16 +42,20 @@ type CopilotModel = {
   }
 }
 
+type Auth = { access: string; baseURL: string }
+
 type Options = {
   providerID?: string
   providerName?: string
-  enterpriseUrl?: string
+  baseURL?: string
   include?: string
   exclude?: string
   refreshMinutes?: number
   [key: string]: any
 }
 
+// Cabeceras que espera el proxy de Copilot para aceptar peticiones de un
+// editor que no es VS Code.
 const INTEGRATION_HEADERS = {
   "Copilot-Integration-Id": "vscode-chat",
   "Editor-Version": "vscode/1.99.0",
@@ -52,31 +63,46 @@ const INTEGRATION_HEADERS = {
   Accept: "application/json",
 }
 
-async function readToken(): Promise<{ access: string; enterpriseUrl?: string } | undefined> {
+function normalizeBaseURL(value: string | undefined): string | undefined {
+  if (!value) return undefined
+  const trimmed = String(value).trim().replace(/\/+$/, "")
+  if (!trimmed) return undefined
+  if (/^https?:\/\//.test(trimmed)) return trimmed
+  return `https://${trimmed}`
+}
+
+// `api.githubcopilot.com` (@github) y `api.<ghe>.com` (GHE.com con data
+// residency) usan el mismo path; el host de GHE self-hosted lo pone el token.
+async function readAuth(options: Options): Promise<Auth | undefined> {
   const env = process.env.GITHUB_COPILOT_TOKEN ?? process.env.COPILOT_GITHUB_TOKEN
-  if (env) return { access: env }
+  if (env) {
+    return { access: env.trim(), baseURL: normalizeBaseURL(options.baseURL) ?? DEFAULT_BASE_URL }
+  }
+
   try {
     const file = join(homedir(), ".local", "share", "opencode", "auth.json")
     const json = JSON.parse(await readFile(file, "utf8"))
     const entry = json?.["github-copilot"]
     if (!entry?.access) return undefined
-    return { access: String(entry.access), enterpriseUrl: entry.enterpriseUrl ?? entry.enterprise_url }
+
+    const fromToken = normalizeBaseURL(entry.enterpriseUrl ?? entry.enterprise_url ?? entry.baseURL)
+    return {
+      access: String(entry.access),
+      baseURL: normalizeBaseURL(options.baseURL) ?? fromToken ?? DEFAULT_BASE_URL,
+    }
   } catch {
     return undefined
   }
 }
 
-async function discover(auth: { access: string; enterpriseUrl?: string }): Promise<CopilotModel[]> {
-  const base = auth.enterpriseUrl
-    ? String(auth.enterpriseUrl).replace(/\/+$/, "")
-    : "https://api.githubcopilot.com"
-  const res = await fetch(`${base}/models`, {
+async function discover(auth: Auth): Promise<CopilotModel[]> {
+  const res = await fetch(`${auth.baseURL}/models`, {
     headers: { Authorization: `Bearer ${auth.access}`, ...INTEGRATION_HEADERS },
     signal: AbortSignal.timeout(15_000),
   })
-  if (!res.ok) throw new Error(`GET ${base}/models -> ${res.status}`)
+  if (!res.ok) throw new Error(`GET ${auth.baseURL}/models -> ${res.status}`)
   const json = (await res.json()) as { data?: CopilotModel[] }
-  // Los modelos de organización llevan "vendor/" en el id; github/* son los oficiales.
+  // Los modelos de empresa llevan `vendor/` en el id; `github/*` son los oficiales.
   return (json.data ?? []).filter(
     (m) => typeof m.id === "string" && m.id.includes("/") && m.model_picker_enabled !== false,
   )
@@ -114,19 +140,18 @@ export default Plugin.define({
   id: "copilot-custom-models",
   async setup(ctx) {
     const options: Options = ctx.options ?? {}
-    const providerID = Provider.ID.make(options.providerID ?? "github-copilot-enterprise")
+    const providerID = Provider.ID.make(options.providerID ?? "copilot-enterprise")
     const providerName = options.providerName ?? "GitHub Copilot Enterprise"
     const include = matcher(options.include, true)
     const exclude = matcher(options.exclude, false)
     const refreshMs = Math.max(1, options.refreshMinutes ?? 10) * 60_000
 
     let models: ReturnType<typeof toModel>[] = []
-    let auth: Awaited<ReturnType<typeof readToken>>
+    let auth: Auth | undefined
 
     const refresh = async () => {
-      const nextAuth = await readToken()
+      const nextAuth = await readAuth(options)
       if (!nextAuth) return false
-      if (options.enterpriseUrl) nextAuth.enterpriseUrl = options.enterpriseUrl
 
       let list: CopilotModel[]
       try {
@@ -142,7 +167,10 @@ export default Plugin.define({
         .map((m) => toModel(providerID, m))
 
       const changed =
-        nextAuth.access !== auth?.access || JSON.stringify(next) !== JSON.stringify(models)
+        nextAuth.access !== auth?.access ||
+        nextAuth.baseURL !== auth?.baseURL ||
+        JSON.stringify(next) !== JSON.stringify(models)
+
       auth = nextAuth
       models = next
       return changed
@@ -152,19 +180,16 @@ export default Plugin.define({
 
     await ctx.provider.transform((editor) => {
       if (!auth || models.length === 0) return
-      // KAIA sólo anuncia el endpoint OpenAI Chat Completions, así que se expone
-      // con el runtime openai-compatible en vez del nativo de github-copilot.
+      // Los modelos de empresa solo anuncian el endpoint OpenAI Chat
+      // Completions, así que se exponen con el runtime `openai-compatible`
+      // en lugar del nativo de github-copilot.
       editor.add({
         info: {
           ...Provider.Info.empty(providerID),
           name: providerName,
           activation: "enabled",
           package: "@opencode/ai/providers/openai-compatible",
-          settings: {
-            baseURL: auth.enterpriseUrl
-              ? String(auth.enterpriseUrl).replace(/\/+$/, "")
-              : "https://api.githubcopilot.com",
-          },
+          settings: { baseURL: auth.baseURL },
           headers: { Authorization: `Bearer ${auth.access}`, ...INTEGRATION_HEADERS },
         },
         models,
