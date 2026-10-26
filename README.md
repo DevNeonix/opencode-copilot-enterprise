@@ -1,61 +1,125 @@
 # opencode-copilot-enterprise
 
-**Make your organization's GitHub Copilot Enterprise models usable in [OpenCode](https://opencode.ai).**
+Make the custom models of your **GitHub Copilot Enterprise** organization show up in
+[OpenCode](https://opencode.ai).
 
-OpenCode talks to Copilot, but it never asks Copilot's `/models` endpoint, so the custom
-models your organization enables in Copilot Enterprise stay invisible in the model picker.
-This plugin fetches them with the token you already have and publishes them as a regular
-OpenCode provider.
+## The problem
 
-No configuration beyond signing in. No hardcoded vendor, host, or org name — it works with
-any Copilot Enterprise deployment.
+Your company can enable its own models in Copilot Enterprise. They work in VS Code, but
+OpenCode never sees them: its built-in `github-copilot` provider only knows the official
+`github/*` models, because OpenCode never asks Copilot for the list of models.
 
-## Why this exists
+So the models are there, paid for, and you can't select them.
 
-GitHub Copilot Enterprise lets organizations expose custom models under their own
-`vendor/*` namespace (for example `acme/llm/my-model`). Those models show up in VS Code
-Copilot Chat, but OpenCode's built-in `github-copilot` provider only knows the official
-`github/*` models because it never performs discovery.
+## The fix
 
-The plugin closes that gap:
+This plugin asks Copilot for the model list with the token OpenCode already has, keeps the
+organization models, and publishes them as a normal OpenCode provider. They appear in the
+model picker like any other model.
 
-1. Reads the Copilot token from OpenCode's auth store (or an env var).
-2. Calls `GET /models` on the Copilot API with the headers Copilot expects.
-3. Keeps the organization models (`id` contains `/`, not `github/*`).
-4. Publishes them as a provider using OpenCode's `openai-compatible` runtime, pointed at
-   the same host, since those models advertise the OpenAI Chat Completions endpoint.
-
-The list refreshes every 10 minutes, so models newly enabled by your admins appear without
-restarting OpenCode.
-
-## Requirements
-
-| | |
-| --- | --- |
-| OpenCode | 2.x (`@opencode/plugin` >= 2.1.0) |
-| GitHub | A Copilot Enterprise seat that exposes organization models |
-| Auth | `opencode auth login` → GitHub Copilot, or `GITHUB_COPILOT_TOKEN` |
+It works with any Copilot Enterprise org — nothing about your company is hardcoded.
 
 ## Install
 
 ```sh
-# 1. Sign in to Copilot once
-opencode auth login        # choose GitHub Copilot
-
-# 2. Install the plugin
-opencode plugin add github:DevNeonix/opencode-copilot-enterprise
-
-# 3. Check
-opencode models | grep -i copilot-enterprise
+opencode auth login                                   # 1. choose GitHub Copilot
+opencode plugin add github:DevNeonix/opencode-copilot-enterprise   # 2. install
+opencode models | grep copilot-enterprise             # 3. check
 ```
 
-The plugin loads from the global config (`~/.config/opencode/opencode.json`) and applies to
-every project. Changes hot-reload; use `/reload` in the TUI if you want to force it.
+That's it. Step 1 is only needed once; the plugin installs globally and applies to every
+project.
 
-### From a local clone
+If step 3 prints nothing, see [Troubleshooting](#troubleshooting).
 
-`opencode plugin add` only accepts npm or Git targets, so point the config at the
-**directory** by hand — not at a file:
+## Pick a model
+
+Use what step 3 printed:
+
+```sh
+opencode run --model "copilot-enterprise/<vendor>/<model>" "say ok"
+```
+
+Inside the TUI, the same models are in the model picker under **GitHub Copilot Enterprise**.
+
+## How updates work
+
+The list is read once at startup and again every 10 minutes. If an admin enables or removes
+a model, it appears or disappears without restarting OpenCode.
+
+You never edit a config file to add models. Whatever Copilot reports is what you get.
+
+## Configuration
+
+Optional — the plugin works with no settings at all. To change behavior:
+
+```jsonc title="~/.config/opencode/opencode.json"
+{
+  "plugins": [
+    {
+      "package": "github:DevNeonix/opencode-copilot-enterprise",
+      "options": {
+        "providerName": "Copilot · ACME",
+        "include": "^acme/"
+      }
+    }
+  ]
+}
+```
+
+| Option | Default | What it does |
+| --- | --- | --- |
+| `providerName` | `GitHub Copilot Enterprise` | Name shown in the model picker |
+| `providerID` | `copilot-enterprise` | Prefix used in model references |
+| `include` | everything | Only keep model ids matching this regex |
+| `exclude` | nothing | Drop model ids matching this regex |
+| `refreshMinutes` | `10` | How often to re-read the list |
+| `baseURL` | from your token | Copilot host, if it isn't the public one |
+
+### Which host does it call?
+
+1. `baseURL`, if you set it
+2. The host stored with your token
+3. `https://api.githubcopilot.com`
+
+Both GitHub Enterprise Cloud (`api.<subdomain>.ghe.com`) and self-hosted GitHub Enterprise
+work. `baseURL` accepts `host` or a full `https://` URL.
+
+### Which token does it use?
+
+First `GITHUB_COPILOT_TOKEN`, then `COPILOT_GITHUB_TOKEN`, then the one saved by
+`opencode auth login`. Use an env var only if you want a token other than your own.
+
+## Troubleshooting
+
+**No models appear.** Check that the plugin is loaded:
+
+```sh
+opencode plugin list | grep copilot
+```
+
+Then read the log:
+
+```sh
+grep -i copilot ~/.local/share/opencode/log/opencode.log | tail -20
+```
+
+The usual causes:
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| Plugin not in `plugin list` | Not installed | `opencode plugin add github:DevNeonix/opencode-copilot-enterprise` |
+| `GET .../models -> 401` or `403` | Token expired or no seat | `opencode auth login` again |
+| Request succeeds, zero models | Your org has no custom models enabled | Ask your Copilot admin |
+| Models appear but calls fail | Model doesn't accept the OpenAI chat protocol | Open an issue with the log line |
+
+**I installed it but the models are the old ones / missing.** Force a full reload with
+`/reload` in the TUI, or `opencode service restart`.
+
+## Installing from a local clone
+
+`opencode plugin add` only accepts npm or Git targets. To use a local copy, point the config
+at the **folder** (not a file):
 
 ```jsonc title="~/.config/opencode/opencode.json"
 {
@@ -63,92 +127,22 @@ every project. Changes hot-reload; use `/reload` in the TUI if you want to force
 }
 ```
 
-## Configuration
+## What it does internally
 
-Everything works with zero options. To tune it, use the object form:
+1. Reads the Copilot token from OpenCode's auth store.
+2. Calls `GET /models` on the Copilot host with the headers Copilot expects from an editor.
+3. Keeps models whose id contains `/` (organization models) and skips `github/*`.
+4. Publishes them as one provider using OpenCode's `openai-compatible` runtime, with their
+   real context window, output limit, and tool/vision support.
 
-```jsonc title="~/.config/opencode/opencode.json"
-{
-  "plugins": [
-    {
-      "package": "opencode-copilot-enterprise",
-      "options": {
-        "providerName": "Copilot · ACME",
-        "include": "^acme/",
-        "exclude": "deprecated"
-      }
-    }
-  ]
-}
-```
-
-| Option | Default | Description |
-| --- | --- | --- |
-| `providerID` | `copilot-enterprise` | Provider id used in model references (`<providerID>/<model id>`) |
-| `providerName` | `GitHub Copilot Enterprise` | Label shown in the model picker |
-| `baseURL` | token's `enterpriseUrl`, else `https://api.githubcopilot.com` | Copilot host; accepts `host` or full URL |
-| `include` | all | Regex of model ids to include |
-| `exclude` | none | Regex of model ids to drop |
-| `refreshMinutes` | `10` | Minutes between model-list refreshes |
-
-### Hosts and data residency
-
-The host is resolved in this order:
-
-1. `baseURL` option
-2. `enterpriseUrl` / `enterprise_url` / `baseURL` from the stored token
-3. `https://api.githubcopilot.com`
-
-GitHub Enterprise Cloud with data residency uses `api.<subdomain>.ghe.com`; GitHub
-Enterprise Server uses your own host. Both work — the plugin sends whatever host you give
-it to both `/models` and `/chat/completions`.
-
-### Token resolution
-
-Order: `GITHUB_COPILOT_TOKEN` → `COPILOT_GITHUB_TOKEN` → `auth.json`. The env vars are handy
-for CI or for using a token that isn't OpenCode's own.
-
-## Verify
-
-```sh
-opencode plugin list                      # copilot-custom-models — active
-opencode models | grep copilot-enterprise
-opencode run --model "<providerID>/<model id>" "say ok"
-```
-
-If nothing appears, check the log:
-
-```sh
-grep -i copilot ~/.local/share/opencode/log/opencode.log | tail -20
-```
-
-Common causes: no Copilot seat, an expired token (re-run `opencode auth login`), or an
-organization that hasn't enabled any custom models.
-
-## How it works
-
-```
-Copilot /models  ──►  filter vendor/*  ──►  Provider.Info + Model.Info[]
-                                                   │
-                                    ctx.provider.transform(editor)
-                                                   │
-                                     provider "copilot-enterprise"
-                                     package: openai-compatible
-                                     baseURL: <copilot host>
-```
-
-Models are exposed to OpenCode with their real context window, max output, and tool/vision
-capabilities as advertised by Copilot. Costs are zero because billing is handled by your
-Copilot seat.
+Costs are shown as zero because your Copilot seat pays for the usage.
 
 ## Limitations
 
-- Organization models are assumed to speak OpenAI Chat Completions, which is what Copilot
-  advertises for them. This is why the built-in `github-copilot` runtime isn't used.
-- The token belongs to the signed-in GitHub user; the plugin never stores or forwards it
-  anywhere except the configured Copilot host.
-- Streaming, tools, and vision depend on what each model declares. A model that doesn't
-  advertise `tool_calls` is published with tools disabled.
+- Organization models are assumed to speak the OpenAI Chat Completions protocol, which is
+  what Copilot advertises for them.
+- Your token is only ever sent to the configured Copilot host. The plugin stores nothing.
+- A model that doesn't advertise `tool_calls` is published with tools disabled.
 
 ## License
 
