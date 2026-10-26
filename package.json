@@ -1,0 +1,23 @@
+{
+  "name": "opencode-copilot-enterprise",
+  "version": "1.0.0",
+  "description": "OpenCode 2 plugin: descubre y publica los modelos custom de GitHub Copilot Enterprise (p. ej. inditex/KAIA/*)",
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "index.ts"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "github-copilot",
+    "copilot-enterprise"
+  ],
+  "peerDependencies": {
+    "@opencode/plugin": ">=2.1.0"
+  }
+}
